@@ -1,19 +1,14 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, CallbackContext, MessageHandler, filters
-import requests
+ import telebot
+from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 import os
-import logging
-import tempfile
 import json
-import asyncio
+import requests
+import tempfile
+import logging
 
 # تنظیمات
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(name)
 
 # خواندن از متغیرهای محیطی
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -25,31 +20,33 @@ try:
 except:
     FILE_DATABASE = {}
 
-# بررسی تنظیمات ضروری
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN تنظیم نشده است!")
     exit(1)
 
-async def check_channel_membership(user_id, context):
+bot = telebot.TeleBot(BOT_TOKEN)
+
+def check_channel_membership(user_id):
     """بررسی عضویت کاربر در کانال‌های اجباری"""
     for channel in REQUIRED_CHANNELS:
         if channel.strip():
             try:
-                member = await context.bot.get_chat_member(channel.strip(), user_id)
-                if member.status in ['left', 'kicked']:
+                chat_member = bot.get_chat_member(channel.strip(), user_id)
+                if chat_member.status in ['left', 'kicked']:
                     return False, channel.strip()
             except Exception as e:
                 logger.error(f"خطا در بررسی کانال {channel}: {e}")
                 return False, channel.strip()
     return True, None
 
-async def start(update: Update, context: CallbackContext):
+@bot.message_handler(commands=['start'])
+def start_command(message):
     """دستور شروع /start"""
-    user_id = update.effective_user.id
-    first_name = update.effective_user.first_name
+    user_id = message.from_user.id
+    first_name = message.from_user.first_name
     
     # بررسی عضویت
-    is_member, channel = await check_channel_membership(user_id, context)
+    is_member, channel = check_channel_membership(user_id)
     
     if not is_member:
         # ایجاد دکمه‌های عضویت
@@ -64,7 +61,8 @@ async def start(update: Update, context: CallbackContext):
         keyboard.append([InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_membership")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(
+        bot.send_message(
+            message.chat.id,
             f"👋 سلام {first_name}!\n\n"
             "🤖 به ربات دانلود فایل خوش آمدید!\n\n"
             "📢 برای دسترسی به فایل‌ها، لطفاً در کانال‌های زیر عضو شوید:\n"
@@ -75,14 +73,10 @@ async def start(update: Update, context: CallbackContext):
         return
     
     # نمایش منوی اصلی
-    await show_main_menu(update, context, first_name)
+    show_main_menu(message)
 
-async def show_main_menu(update, context, first_name=None):
+def show_main_menu(message):
     """نمایش منوی اصلی"""
-    if not first_name:
-        first_name = ""
-    
-    # ایجاد دکمه‌های فایل‌ها
     keyboard = []
     for file_id, file_data in FILE_DATABASE.items():
         keyboard.append([InlineKeyboardButton(
@@ -99,40 +93,60 @@ async def show_main_menu(update, context, first_name=None):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     text = (
-        f"🎉 **سلام {first_name}!**\n\n"
-        "📁 **لیست فایل‌های موجود:**\n\n"
+        f"🎉 سلام {message.from_user.first_name}!\n\n"
+        "📁 لیست فایل‌های موجود:\n\n"
         "👉 روی فایل مورد نظر کلیک کنید تا دانلود شود.\n\n"
-        "⚠️ **توجه:** فایل پس از دانلود، ۳۰ ثانیه در ربات باقی می‌ماند.\n"
+        "⚠️ توجه: فایل پس از دانلود، ۳۰ ثانیه در ربات باقی می‌ماند.\n"
         "💾 لطفاً فایل را promptly ذخیره کنید."
     )
     
-    if isinstance(update, Update) and update.message:
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
-    else:
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    bot.send_message(message.chat.id, text, reply_markup=reply_markup, parse_mode='Markdown')
 
-async def download_and_send_file(update: Update, context: CallbackContext, file_key: str):
-    """دانلود و ارسال فایل به کاربر"""
-    query = update.callback_query
-    await query.answer()
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback(call):
+    """مدیریت کلیک روی دکمه‌ها"""
+    if call.data == "check_membership":
+        user_id = call.from_user.id
+        is_member, channel = check_channel_membership(user_id)
+        
+        if not is_member:
+            bot.answer_callback_query(call.id, "❌ هنوز عضو نشدید! لطفاً ابتدا عضو شوید.", show_alert=True)
+        else:
+            bot.answer_callback_query(call.id, "✅ عضویت شما تأیید شد!", show_alert=True)
+            show_main_menu(call.message)
     
-    user_id = query.from_user.id
+    elif call.data == "refresh":
+        bot.answer_callback_query(call.id, "🔄 لیست بروزرسانی شد!")
+        show_main_menu(call.message)
+    
+    elif call.data == "help":
+        bot.answer_callback_query(call.id)
+        show_help_menu(call.message)
+    
+    elif call.data.startswith("download_"):
+        file_key = call.data[9:]  # حذف "download_" از ابتدا
+        download_and_send_file(call.message, file_key)
+
+def download_and_send_file(message, file_key):
+    """دانلود و ارسال فایل به کاربر"""
+    user_id = message.chat.id
     
     # بررسی عضویت
-    is_member, channel = await check_channel_membership(user_id, context)
+    is_member, channel = check_channel_membership(user_id)
     if not is_member:
-        await query.edit_message_text(f"❌ برای دانلود باید در {channel} عضو شوید!\nدستور /start را بزنید.")
+        bot.send_message(user_id, f"❌ برای دانلود باید در {channel} عضو شوید!\nدستور /start را بزنید.")
         return
     
     file_data = FILE_DATABASE.get(file_key)
     if not file_data:
-        await query.edit_message_text("❌ فایل پیدا نشد!")
+        bot.send_message(user_id, "❌ فایل پیدا نشد!")
         return
     
     # اطلاع‌رسانی شروع دانلود
-    progress_msg = await query.edit_message_text(
-        f"⏳ **در حال آماده‌سازی فایل...**\n\n"
-        f"📝 **{file_data['name']}**\n"
+    progress_msg = bot.send_message(
+        user_id,
+        f"⏳ در حال آماده‌سازی فایل...\n\n"
+        f"📝 {file_data['name']}\n"
         f"📦 حجم: {file_data['size']}\n\n"
         "لطفاً کمی صبر کنید...",
         parse_mode='Markdown'
@@ -142,12 +156,14 @@ async def download_and_send_file(update: Update, context: CallbackContext, file_
         # دانلود فایل از لینک مستقیم
         direct_link = file_data["direct_link"]
         
-        await progress_msg.edit_text(
-            f"📥 **در حال دانلود...**\n\n"
-            f"📝 **{file_data['name']}**\n"
+        bot.edit_message_text(
+            f"📥 در حال دانلود...\n\n"
+            f"📝 {file_data['name']}\n"
             f"📦 حجم: {file_data['size']}\n"
             f"📋 توضیحات: {file_data['description']}\n\n"
             "⏳ لطفاً منتظر بمانید...",
+            user_id,
+            progress_msg.message_id,
             parse_mode='Markdown'
         )
         
@@ -164,75 +180,73 @@ async def download_and_send_file(update: Update, context: CallbackContext, file_
             temp_file_path = temp_file.name
         
         # ارسال فایل به کاربر
-        await progress_msg.edit_text("📤 **در حال آپلود فایل...**")
+        bot.edit_message_text(
+            "📤 در حال آپلود فایل...",
+            user_id,
+            progress_msg.message_id
+        )
         
         if file_data["type"] == "video":
-            await context.bot.send_video(
-                chat_id=user_id,
-                video=open(temp_file_path, 'rb'),
-                caption=(
-                    f"🎬 **{file_data['name']}**\n\n"
-                    f"📝 {file_data['description']}\n"
-                    f"📦 حجم: {file_data['size']}\n\n"
-                    "⏰ **این فایل ۳۰ ثانیه دیگر حذف خواهد شد!**\n"
-                    "💾 لطفاً فایل را promptly ذخیره کنید."
-                ),
-                parse_mode='Markdown'
-            )
+            with open(temp_file_path, 'rb') as file:
+                bot.send_video(
+                    user_id,
+                    file,
+                    caption=(
+                        f"🎬 {file_data['name']}\n\n"
+                        f"📝 {file_data['description']}\n"
+                        f"📦 حجم: {file_data['size']}\n\n"
+                        "⏰ این فایل ۳۰ ثانیه دیگر حذف خواهد شد!\n"
+                        "💾 لطفاً فایل را promptly ذخیره کنید."
+                    ),
+                    parse_mode='Markdown'
+                )
         elif file_data["type"] == "audio":
-            await context.bot.send_audio(
-                chat_id=user_id,
-                audio=open(temp_file_path, 'rb'),
-                caption=(
-                    f"🎵 **{file_data['name']}**\n\n"
-                    f"📝 {file_data['description']}\n"
-                    f"📦 حجم: {file_data['size']}\n\n"
-                    "⏰ **این فایل ۳۰ ثانیه دیگر حذف خواهد شد!**\n"
-                    "💾 لطفاً فایل را promptly ذخیره کنید."
-                ),
-                parse_mode='Markdown'
-            )
+            with open(temp_file_path, 'rb') as file:
+                bot.send_audio(
+                    user_id,
+                    file,
+                    caption=(
+                        f"🎵 {file_data['name']}\n\n"
+                        f"📝 {file_data['description']}\n"
+                        f"📦 حجم: {file_data['size']}\n\n"
+                        "⏰ این فایل ۳۰ ثانیه دیگر حذف خواهد شد!\n"
+                        "💾 لطفاً فایل را promptly ذخیره کنید."
+                    ),
+                    parse_mode='Markdown'
+                )
         else:
-            await context.bot.send_document(
-                chat_id=user_id,
-                document=open(temp_file_path, 'rb'),
-                caption=(
-                    f"📄 **{file_data['name']}**\n\n"
-                    f"📝 {file_data['description']}\n"
-                    f"📦 حجم: {file_data['size']}\n\n"
-                    "⏰ **این فایل ۳۰ ثانیه دیگر حذف خواهد شد!**\n"
-                    "💾 لطفاً فایل را promptly ذخیره کنید."
-                ),
-                parse_mode='Markdown'
-            )
+            with open(temp_file_path, 'rb') as file:
+                bot.send_document(
+                    user_id,
+                    file,
+                    caption=(
+            f"📄 {file_data['name']}\n\n"
+                        f"📝 {file_data['description']}\n"
+                        f"📦 حجم: {file_data['size']}\n\n"
+                        "⏰ این فایل ۳۰ ثانیه دیگر حذف خواهد شد!\n"
+                        "💾 لطفاً فایل را promptly ذخیره کنید."
+                    ),
+                    parse_mode='Markdown'
+                )
         
         # پاک کردن فایل موقت
         os.unlink(temp_file_path)
         
         # پیام موفقیت
-        await progress_msg.edit_text(
-            f"✅ **{file_data['name']}** با موفقیت ارسال شد!\n\n"
+        bot.edit_message_text(
+            f"✅ {file_data['name']} با موفقیت ارسال شد!\n\n"
             "📥 فایل به پیوی شما ارسال شده است.\n"
             "⏰ به یاد داشته باشید: فایل ۳۰ ثانیه دیگر حذف می‌شود!\n\n"
             "🎉 از فایل لذت ببرید!",
+            user_id,
+            progress_msg.message_id,
             parse_mode='Markdown'
         )
         
-        # حذف پیام هشدار بعد از ۳۵ ثانیه
-        await asyncio.sleep(35)
-        try:
-            await progress_msg.edit_text(
-                f"🎉 امیدواریم از **{file_data['name']}** لذت برده باشید!\n\n"
-                "📂 برای دریافت فایل‌های بیشتر از منوی اصلی استفاده کنید.",
-                parse_mode='Markdown'
-            )
-        except:
-            pass
-        
     except Exception as e:
         logger.error(f"خطا در دانلود فایل: {e}")
-        await progress_msg.edit_text(
-            "❌ **خطا در دانلود فایل!**\n\n"
+        bot.edit_message_text(
+            "❌ خطا در دانلود فایل!\n\n"
             "⚠️ دلایل احتمالی:\n"
             "• لینک فایل مشکل دارد\n"
             "• سرور در دسترس نیست\n"
@@ -241,92 +255,52 @@ async def download_and_send_file(update: Update, context: CallbackContext, file_
             "🔧 لطفاً:\n"
             "• دوباره تلاش کنید\n"
             "• با پشتیبانی تماس بگیرید\n"
-            "• از فایل دیگری استفاده کنید"
+            "• از فایل دیگری استفاده کنید",
+            user_id,
+            progress_msg.message_id
         )
 
-async def button_handler(update: Update, context: CallbackContext):
-    """مدیریت کلیک روی دکمه‌ها"""
-    query = update.callback_query
-    data = query.data
-    
-    if data == "check_membership":
-        user_id = query.from_user.id
-        is_member, channel = await check_channel_membership(user_id, context)
-        
-        if not is_member:
-            await query.answer("❌ هنوز عضو نشدید! لطفاً ابتدا عضو شوید.", show_alert=True)
-        else:
-            await query.answer("✅ عضویت شما تأیید شد!", show_alert=True)
-            await show_main_menu(update, context)
-    
-    elif data == "refresh":
-        await query.answer("🔄 لیست بروزرسانی شد!")
-        await show_main_menu(update, context)
-    
-    elif data == "help":
-        await query.answer()
-        await show_help_menu(update, context)
-    
-    elif data.startswith("download_"):
-        file_key = data[9:]  # حذف "download_" از ابتدا
-        await download_and_send_file(update, context, file_key)
-
-async def show_help_menu(update: Update, context: CallbackContext):
+def show_help_menu(message):
     """نمایش منوی راهنما"""
-    query = update.callback_query
-    
     help_text = (
-        "📖 **راهنمای ربات دانلود فایل**\n\n"
-        "🎯 **نحوه استفاده:**\n"
+        "📖 راهنمای ربات دانلود فایل\n\n"
+        "🎯 نحوه استفاده:\n"
         "1. در کانال‌های اجباری عضو شوید\n"
         "2. از منوی اصلی فایل مورد نظر را انتخاب کنید\n"
         "3. روی فایل کلیک کنید تا دانلود شود\n"
         "4. فایل را promptly ذخیره کنید\n\n"
-        "⚠️ **نکات مهم:**\n"
+        "⚠️ نکات مهم:\n"
         "• فایل‌ها ۳۰ ثانیه پس از ارسال حذف می‌شوند\n"
         "• حتماً فایل‌ها را ذخیره کنید\n"
         "• برای مشکل در عضویت، /start را بزنید\n"
         "• برای بروزرسانی لیست، دکمه 🔄 را بزنید\n\n"
-        "🔧 **پشتیبانی:**\n"
+        "🔧 پشتیبانی:\n"
         "در صورت مشکل با پشتیبانی تماس بگیرید."
     )
     
     keyboard = [[InlineKeyboardButton("🔙 بازگشت به منو", callback_data="back_to_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text(help_text, reply_markup=reply_markup, parse_mode='Markdown')
+    bot.send_message(message.chat.id, help_text, reply_markup=reply_markup, parse_mode='Markdown')
 
-async def back_to_menu(update: Update, context: CallbackContext):
+@bot.callback_query_handler(func=lambda call: call.data == "back_to_menu")
+def back_to_menu(call):
     """بازگشت به منوی اصلی"""
-    query = update.callback_query
-    await query.answer()
-    await show_main_menu(update, context)
+    bot.answer_callback_query(call.id)
+    show_main_menu(call.message)
 
-async def help_command(update: Update, context: CallbackContext):
+@bot.message_handler(commands=['help'])
+def help_command(message):
     """دستور راهنما"""
-    await update.message.reply_text(
-        "📖 **راهنمای ربات:**\n\n"
+    bot.send_message(
+        message.chat.id,
+        "📖 راهنمای ربات:\n\n"
         "• /start - شروع کار و نمایش منوی اصلی\n"
         "• /help - نمایش این راهنما\n\n"
         "🎯 برای شروع دستور /start را ارسال کنید.",
         parse_mode='Markdown'
     )
 
-def main():
-    """تابع اصلی"""
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # اضافه کردن هندلرها
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    
-    # هندلرهای کال‌بک
-    application.add_handler(CallbackQueryHandler(button_handler, pattern="^(check_membership|refresh|help|download_.*)$"))
-    application.add_handler(CallbackQueryHandler(back_to_menu, pattern="^back_to_menu$"))
-    
-    # اجرای ربات
+if name == 'main':
     logger.info("ربات در حال اجرا است...")
-    application.run_polling()
-
-if __name__ == '__main__':
-    main()
+    bot.infinity_polling()            
