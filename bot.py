@@ -425,6 +425,8 @@ if __name__ == "__main__":
 
     logger.info("ربات در حال اجرا است — شروع polling...")
     # حلقهٔ ساده با تلاش مجدد در صورت بروز خطا (برای روبرو شدن با قطع‌های کوتاه‌مدت شبکه)
+    bot.remove_webhook()
+    
     while True:
         try:
             bot.infinity_polling(timeout=60, long_polling_timeout=60)
