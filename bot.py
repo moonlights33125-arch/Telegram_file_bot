@@ -173,7 +173,17 @@ def download_and_send_file(chat_id, user_id, file_key):
         sent_msg = bot.send_document(
             chat_id,
             file_id,
-            caption=f"📄 <b>{file_data.get('name', 'فایل')}</b>",
+            name = file_data.get('name', '')
+            description = file_data.get('description', '')
+
+            if name and description:
+               caption = f"📄 <b>{name}</b>\n\n{description}"
+            elif name:
+                caption = f"📄 <b>{name}</b>"
+            elif description:
+                caption = description
+            else:
+                caption = ""
             parse_mode="HTML",
         )
     except Exception as e:
